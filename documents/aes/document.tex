@@ -1,0 +1,211 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\geometry{margin=1in}
+
+% Code listing configuration for Rust
+\definecolor{rustblue}{RGB}{26,94,180}
+\definecolor{rustgreen}{RGB}{23,155,79}
+\definecolor{rustorange}{RGB}{251,146,60}
+\definecolor{rustpurple}{RGB}{139,92,246}
+\definecolor{rustgray}{RGB}{108,117,125}
+\definecolor{rustbg}{RGB}{248,249,250}
+
+\lstdefinestyle{ruststyle}{
+    language=C++,
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{rustblue}\bfseries,
+    commentstyle=\color{rustgreen}\itshape,
+    numberstyle=\tiny\color{rustgray},
+    backgroundcolor=\color{rustbg},
+    frame=single,
+    breaklines=true,
+    numbers=left,
+    stepnumber=1,
+    numbersep=8pt,
+    showstringspaces=false,
+    tabsize=2,
+}
+
+\lstset{style=ruststyle}
+
+\title{AES-128 Implementation: Technical Documentation}
+\author{Submission ID: 19070884}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+This document explains the AES-128 implementation in the \texttt{aes} Rust module. The implementation follows the specification in the Federal Information Processing Standard (FIPS) 197 \cite{NIST2001}, which defines the Advanced Encryption Standard (AES), a symmetric block cipher operating on 128-bit blocks with 128-bit keys. AES was selected by NIST from the Rijndael cipher family proposed by Daemen and Rijmen \cite{NIST2001}.
+
+AES achieves security through two principles: \textbf{confusion} (obscuring the relationship between plaintext and ciphertext, via the S-box) and \textbf{diffusion} (spreading the influence of each input bit across the output, via ShiftRows and MixColumns). The key is mixed in via AddRoundKey.
+
+\section{Module Structure}
+
+The implementation is organized into several modules under \texttt{aes/src/}:
+
+\begin{center}
+\begin{tabular}{ll}
+\hline
+\textbf{File} & \textbf{Purpose} \\
+\hline
+\texttt{lib.rs}      & Module declarations and public API \\
+\texttt{state.rs}    & 128-bit state array representation \\
+\texttt{sbox.rs}     & S-box and inverse S-box lookup tables \\
+\texttt{gf256.rs}    & GF($2^8$) arithmetic for MixColumns \\
+\texttt{alg.rs}      & Core cipher, inverse cipher, key expansion \\
+\texttt{ecb.rs}      & ECB mode encryption/decryption \\
+\texttt{main.rs}     & CLI binary for block encryption \\
+\hline
+\end{tabular}
+\end{center}
+
+Tests are in \texttt{aes/tests/round\_trip.rs}.
+
+\section{State Representation}
+
+AES treats the 128-bit block as a 4$\times$4 matrix of bytes. This layout lets the algorithm mix data both along rows (ShiftRows) and along columns (MixColumns), spreading changes across the entire block. The implementation stores the state in column-major order, matching FIPS 197 Sec.\ 3.4 \cite{NIST2001}:
+
+\begin{lstlisting}[caption=state.rs: bytes b0--b15 arranged as a 4x4 matrix]
+// | b0  b4  b8  b12 |
+// | b1  b5  b9  b13 |
+// | b2  b6  b10 b14 |
+// | b3  b7  b11 b15 |
+\end{lstlisting}
+
+\textbf{Key code locations (state.rs):}
+\begin{itemize}
+    \item \textbf{Lines 5--17:} \texttt{State} struct with internal \texttt{data: [u8; 16]}.
+    \item \textbf{Lines 33--35:} \texttt{index\_offset(row, col)} maps $(r,c) \mapsto c \cdot 4 + r$ for column-major indexing.
+    \item \textbf{Lines 50--65:} \texttt{get\_col} and \texttt{set\_col} for column-wise access used by MixColumns.
+    \item \textbf{Lines 101--122:} \texttt{BitXor} and \texttt{BitXorAssign} for AddRoundKey.
+\end{itemize}
+
+\section{S-Box and Inverse S-Box}
+
+\subsection*{How it works}
+
+\textbf{SubBytes} replaces each byte in the state with another byte using a fixed lookup table (the S-box). The S-box is designed to be \emph{non-linear}: small changes in the input produce large, unpredictable changes in the output. This provides \textbf{confusion}---it hides statistical relationships between plaintext and ciphertext. The inverse S-box reverses this mapping for decryption. The S-box and its inverse are specified in FIPS 197 Tables 4 and 6 \cite{NIST2001}. They are implemented as constant arrays.
+
+\textbf{Key code locations (sbox.rs):}
+\begin{itemize}
+    \item \textbf{Lines 1--33:} \texttt{AES\_SBOX} --- forward substitution table (matches FIPS 197 Table 4).
+    \item \textbf{Lines 35--67:} \texttt{AES\_INV\_SBOX} --- inverse substitution table (matches FIPS 197 Table 6).
+    \item \textbf{Lines 69--77:} \texttt{aes\_sbox} and \texttt{aes\_inv\_sbox} lookup helpers.
+\end{itemize}
+
+\section{GF($2^8$) Arithmetic}
+
+MixColumns and its inverse use multiplication in the finite field GF($2^8$) with irreducible polynomial $m(x) = x^8 + x^4 + x^3 + x + 1$ (hex \texttt{0x11B}), as in FIPS 197 Sec.\ 4.2 \cite{NIST2001}. In GF($2^8$), addition is XOR and multiplication is polynomial multiplication reduced modulo $m(x)$. The \texttt{xtime} function multiplies by 2 (i.e.\ by $x$) and handles the modular reduction in one step.
+
+\textbf{Key code locations (gf256.rs):}
+\begin{itemize}
+    \item \textbf{Lines 3--21:} \texttt{gf256\_mul(a, b)} --- generic multiplication using shift-and-add and reduction via \texttt{xtime}.
+    \item \textbf{Lines 24--29:} \texttt{xtime(x)} --- multiplication by $x$ (i.e.\ by 2) in GF($2^8$), with reduction by \texttt{0x1B} when the high bit is set \cite{NIST2001}.
+    \item \textbf{Lines 31--37:} \texttt{gf256\_mul2} and \texttt{gf256\_mul3} --- multiplication by 2 and 3, used in the MixColumns matrix.
+\end{itemize}
+
+\section{Core Algorithm: Cipher and Inverse Cipher}
+
+AES-128 performs 10 rounds plus an initial AddRoundKey. Each round consists of SubBytes, ShiftRows, MixColumns, and AddRoundKey; the last round omits MixColumns. The combination of non-linear substitution (SubBytes) and linear mixing (ShiftRows, MixColumns) gives both \textbf{confusion} and \textbf{diffusion}, making the cipher resistant to cryptanalysis. This matches FIPS 197 Sec.\ 5.1 and 5.3 \cite{NIST2001}.
+
+\textbf{Cipher (encryption) --- alg.rs lines 14--30:}
+\begin{enumerate}
+    \item AddRoundKey with round key 0.
+    \item Rounds 1--9: SubBytes, ShiftRows, MixColumns, AddRoundKey.
+    \item Final round: SubBytes, ShiftRows, AddRoundKey (round key 10).
+\end{enumerate}
+
+\textbf{Inverse Cipher (decryption) --- alg.rs lines 34--48:}
+\begin{enumerate}
+    \item AddRoundKey with round key 10.
+    \item Rounds 9 down to 1: InvShiftRows, InvSubBytes, AddRoundKey, InvMixColumns.
+    \item Final round: InvShiftRows, InvSubBytes, AddRoundKey (round key 0).
+\end{enumerate}
+
+\subsection*{SubBytes / InvSubBytes (alg.rs 54--68)}
+
+Byte-by-byte substitution using \texttt{AES\_SBOX} and \texttt{AES\_INV\_SBOX}. Each byte is replaced independently; no mixing between bytes. This is the only non-linear step in the cipher.
+
+\subsection*{ShiftRows / InvShiftRows (alg.rs 70--118)}
+
+Each row is shifted cyclically to the left (encryption) or right (decryption): row 0 unchanged; row 1 by 1; row 2 by 2; row 3 by 3. This \textbf{diffuses} bytes along each row---a change in one column propagates across the row. Per FIPS 197 Sec.\ 5.1.2 and 5.3.1 \cite{NIST2001}.
+
+\subsection*{MixColumns / InvMixColumns (alg.rs 120--166)}
+
+Each column is treated as a 4-byte vector and multiplied by a fixed 4$\times$4 matrix in GF($2^8$). This \textbf{mixes} bytes within each column---each output byte depends on all four input bytes of that column. Together with ShiftRows, it ensures that after a few rounds every output bit depends on every input bit. The forward matrix uses coefficients \{02, 03, 01, 01\}; the inverse uses \{0e, 0b, 0d, 09\} per FIPS 197 Sec.\ 5.1.3 and 5.3.3 \cite{NIST2001}.
+
+\subsection*{AddRoundKey (alg.rs 50--52)}
+
+XOR of the state with the round key. This injects key material into the cipher and is its own inverse (XOR with the same value twice returns the original). It must be the last step in each round so decryption can reverse the operations correctly.
+
+\section{Key Expansion}
+
+\subsection*{How it works}
+
+The 128-bit master key is expanded into 11 round keys (176 bytes total) so each round uses different key material. The first four words $w[0..3]$ are the key itself. For $i \geq 4$, word $w[i]$ is $w[i-4] \oplus f(w[i-1])$, where $f$ is the identity except when $i$ is a multiple of 4: then $f$ applies RotWord (cyclic byte shift), SubWord (S-box on each byte), and XOR with a round constant Rcon. This design ensures the round keys are derived deterministically but appear random. FIPS 197 Sec.\ 5.2 and Figure 6 \cite{NIST2001}.
+
+\textbf{Key code locations (alg.rs 167--216):}
+\begin{itemize}
+    \item \textbf{Lines 170--181:} Initialize words $w[0..3]$ from the 16-byte key.
+    \item \textbf{Lines 184--199:} For $i = 4..43$: if $i \equiv 0 \pmod{4}$, apply RotWord, SubWord, and XOR with Rcon; then $w[i] = w[i-4] \oplus \mathrm{temp}$.
+    \item \textbf{Lines 219--225:} \texttt{rot\_word} and \texttt{sub\_word} as specified.
+    \item \textbf{Lines 227--244:} \texttt{rcon} --- round constants from FIPS 197 Table 5 \cite{NIST2001} (01, 02, 04, 08, 10, 20, 40, 80, 1B, 36).
+\end{itemize}
+
+\section{ECB Mode}
+
+\subsection*{How it works}
+
+ECB (Electronic Codebook) mode splits the input into 16-byte blocks and encrypts (or decrypts) each block independently with the same key. Identical plaintext blocks produce identical ciphertext blocks, which can leak structure. ECB is simple and useful for single-block encryption or when structure preservation is acceptable. Specified in NIST SP 800-38A \cite{NIST2001}.
+
+\textbf{Key code locations (ecb.rs):}
+\begin{itemize}
+    \item \textbf{Lines 5--14:} \texttt{aes\_128\_ecb\_decrypt} --- chunks input into 16-byte blocks, applies \texttt{inv\_cipher}, concatenates results.
+    \item \textbf{Lines 17--26:} \texttt{aes\_128\_ecb\_encrypt} --- same structure using \texttt{cipher}.
+\end{itemize}
+
+\section{CLI and Tests}
+
+\textbf{main.rs:} Reads a 16-byte key from stdin, then reads 16-byte blocks and outputs the encryption of each block to stdout. Used as a drop-in block encryptor.
+
+\textbf{round\_trip.rs:} Integration tests verify that encrypt-then-decrypt returns the original plaintext. Uses the FIPS 197 Appendix C test vectors (key \texttt{2b7e1516...}, plaintext \texttt{3243f6a8...}) \cite{NIST2001} as well as an all-zero key test.
+
+\section{References}
+
+All algorithmic details (state layout, S-box values, GF($2^8$) multiplication, cipher structure, key expansion, round constants) are taken directly from the official AES standard:
+
+\begin{thebibliography}{9}
+
+\bibitem{NIST2001}
+National Institute of Standards and Technology (2001).
+\textit{Advanced Encryption Standard (AES)}.
+Federal Information Processing Standards Publication (FIPS) 197, NIST FIPS 197-upd1, updated May 9, 2023.
+U.S. Department of Commerce, Washington, D.C.
+\url{https://doi.org/10.6028/NIST.FIPS.197-upd1}
+
+\end{thebibliography}
+
+\subsection*{How the Reference Was Used}
+
+\begin{itemize}
+    \item \textbf{State array:} Sec.\ 3.4 (Figure 1) --- column-major 4$\times$4 byte arrangement.
+    \item \textbf{S-box and inverse S-box:} Tables 4 and 6 --- exact lookup values.
+    \item \textbf{GF($2^8$):} Sec.\ 4.2 --- multiplication with $m(x) = x^8 + x^4 + x^3 + x + 1$; \texttt{xtime} for multiplication by 2.
+    \item \textbf{Cipher:} Sec.\ 5.1 (Algorithm 1) --- round structure, SubBytes, ShiftRows, MixColumns, AddRoundKey.
+    \item \textbf{Inverse cipher:} Sec.\ 5.3 --- order of inverse operations.
+    \item \textbf{MixColumns matrix:} Sec.\ 5.1.3 and 5.3.3 --- coefficients for forward and inverse.
+    \item \textbf{Key expansion:} Sec.\ 5.2 and Figure 6 --- AES-128 key schedule, RotWord, SubWord, Rcon (Table 5).
+    \item \textbf{Test vectors:} Appendix C --- example key and plaintext for round-trip tests.
+\end{itemize}
+
+\end{document}
