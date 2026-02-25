@@ -1,6 +1,9 @@
 use crate::set1::xor::xor_bytes;
 use aes::aes_128_ecb_encrypt;
 
+/// Fixed nonce of zero (for challenges / tests). Do not reuse in production.
+pub const NONCE_ZERO: [u8; 8] = [0u8; 8];
+
 /// CTR mode: encrypt(nonce || counter) gives keystream; XOR with data.
 /// Counter is 64-bit little-endian. Same function for encrypt and decrypt.
 fn ctr_keystream_xor(input: &[u8], key: &[u8; 16], nonce: &[u8; 8]) -> Vec<u8> {
