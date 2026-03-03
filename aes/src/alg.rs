@@ -17,6 +17,7 @@ impl AES128 {
         
         self.add_round_key(state, &key_schedule[0]);
         
+        // First 9 rounds
         for i in 1..10 {
             self.sub_bytes(state);
             self.shift_rows(state);
@@ -24,6 +25,7 @@ impl AES128 {
             self.add_round_key(state, &key_schedule[i]);
         }
         
+        // Last round
         self.sub_bytes(state);
         self.shift_rows(state);
         self.add_round_key(state, &key_schedule[10]);
